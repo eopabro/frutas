@@ -1,0 +1,159 @@
+{"Dashboard IoT para monitoramento de frutas"}
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WazeFresh — Dashboard</title>
+
+  <!-- Bibliotecas -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background: #f7f9fc;
+    }
+    .cards {
+      display:flex;
+      gap:10px;
+      margin-bottom:20px;
+    }
+    .card {
+      padding: 12px;
+      background:white;
+      border-radius:6px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      font-weight: bold;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>WazeFresh — Monitoramento Inteligente de Frutas</h2>
+
+  <!-- Dropdown de seleção -->
+  <div>
+    <label for="fruta">Fruta monitorada:</label>
+    <select id="fruta">
+      <option value="banana">Banana</option>
+      <option value="maca">Maçã</option>
+      <option value="tomate">Tomate</option>
+    </select>
+    <button onclick="loadData()">Carregar</button>
+  </div>
+
+  <!-- Cards métricas -->
+  <div class="cards">
+    <div class="card" id="metric-temp">Temperatura: -- °C</div>
+    <div class="card" id="metric-hum">Umidade: -- %</div>
+    <div class="card" id="metric-gas">MQ-3 (gás): --</div>
+    <div class="card" id="metric-ia">IA: --</div>
+  </div>
+
+  <!-- Gráfico -->
+  <canvas id="chart" height="120"></canvas>
+
+  <script>
+    const socket = io();
+    let chart;
+
+    // =======================
+    // Função para criar gráfico
+    // =======================
+    function createChart(labels, data) {
+      const ctx = document.getElementById('chart').getContext('2d');
+
+      if (chart) chart.destroy();
+
+      chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Gás MQ-3 (mat. orgânica / deterioração)',
+            data: data,
+            borderColor: 'rgb(255, 99, 71)',
+            tension: 0.2
+          }]
+        },
+        options: {
+          scales: { y: { beginAtZero:false } }
+        }
+      });
+    }
+
+    // =======================
+    // Carrega dados do backend
+    // =======================
+    async function loadData() {
+      const fruta = document.getElementById("fruta").value;
+      const res = await fetch(`/api/fruta/${fruta}/limpo`);
+      const json = await res.json();
+
+      if (!json || json.length === 0) {
+        alert("Sem dados suficientes para essa fruta.");
+        return;
+      }
+
+      const labels = json.map(d => new Date(d.timestamp).toLocaleTimeString());
+      const gas = json.map(d => d.mq3_raw);
+
+      createChart(labels, gas);
+
+      // Última amostra
+      const last = json[json.length - 1];
+
+      updateCards(last);
+    }
+
+    // =========================
+    // Atualiza cartões (métricas)
+    // =========================
+    function updateCards(sample) {
+      document.getElementById("metric-temp").innerText =
+        `Temperatura: ${sample.temperatura.toFixed(1)} °C`;
+
+      document.getElementById("metric-hum").innerText =
+        `Umidade: ${sample.umidade_ar.toFixed(1)} %`;
+
+      document.getElementById("metric-gas").innerText =
+        `MQ-3: ${sample.mq3_raw.toFixed(0)}`;
+
+      if (sample.predicao_estado) {
+        document.getElementById("metric-ia").innerText =
+          `IA: ${sample.predicao_estado}`;
+      }
+    }
+
+    // ================================
+    // SocketIO — novo dado em tempo real
+    // ================================
+    socket.on("new_data", (payload) => {
+      const frutaSel = document.getElementById("fruta").value;
+
+      if (payload.tipoFruta === frutaSel) {
+
+        const label = new Date(payload.timestamp).toLocaleTimeString();
+        const gasValue = payload.mq3_raw;
+
+        chart.data.labels.push(label);
+        chart.data.datasets[0].data.push(gasValue);
+
+        if(chart.data.labels.length > 100){
+          chart.data.labels.shift();
+          chart.data.datasets[0].data.shift();
+        }
+
+        chart.update();
+
+        updateCards(payload);
+      }
+    });
+
+    // Carregar ao abrir
+    loadData();
+  </script>
+</body>
+</html>
