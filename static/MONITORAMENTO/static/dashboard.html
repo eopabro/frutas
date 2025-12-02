@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<title>MITH – Monitoramento Inteligente de Hortifrúti</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+<style>
+body {
+  background: #0d0f12;
+  color: white;
+  font-family: Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+}
+header {
+  background: #111317;
+  padding: 20px;
+  text-align: center;
+  font-size: 24px;
+  font-weight: bold;
+}
+.container {
+  padding: 20px;
+}
+.card {
+  background: #14171c;
+  padding: 15px;
+  border-radius: 10px;
+  margin-bottom: 15px;
+}
+.card h3 { margin-top: 0; }
+.select-box {
+  margin-bottom: 20px;
+}
+.flex {
+  display: flex;
+  gap: 15px;
+}
+.card-small {
+  background: #14171c;
+  padding: 15px;
+  border-radius: 10px;
+  flex: 1;
+}
+.chart-container {
+  height: 350px;
+  background: #14171c;
+  padding: 15px;
+  border-radius: 10px;
+}
+</style>
+</head>
+
+<body>
+<header>🍓 MITH – Monitoramento Inteligente de Hortifrúti</header>
+
+<div class="container">
+
+  <div class="select-box">
+    <label>Selecionar fruta:</label>
+    <select id="selectFruta" onchange="carregarDados()">
+      <option value="banana">banana</option>
+      <option value="maca">maçã</option>
+      <option value="tomate">tomate</option>
+      <option value="sem risco">sem risco</option>
+    </select>
+  </div>
+
+  <div class="flex">
+    <div class="card-small">
+      <h3>Estado Previsto</h3>
+      <p id="estadoPrev">--</p>
+    </div>
+
+    <div class="card-small">
+      <h3>Estado Real (se informado)</h3>
+      <p id="estadoReal">--</p>
+    </div>
+
+    <div class="card-small">
+      <h3>Validade Estimada</h3>
+      <p id="validadeEstimada">--</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Tendência</h3>
+    <p id="tendencia">--</p>
+  </div>
+
+  <div class="chart-container">
+    <h3>MQ-3 Raw (Últimas Leituras)</h3>
+    <canvas id="mqChart"></canvas>
+  </div>
+
+  <div class="card">
+    <h3>Acurácia (Estado Real x Previsto)</h3>
+    <p id="acuracia">--</p>
+  </div>
+
+</div>
+
+<script>
+// ================================
+// WEBSOCKET
+// ================================
+const socket = io();
+
+// ================================
+// GRÁFICO
+// ================================
+const ctx = document.getElementById('mqChart').getContext('2d');
+
+const mqChart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [{
+      label: 'MQ-3 Raw',
+      data: [],
+      borderColor: '#21e065',
+      backgroundColor: 'rgba(33,224,101,0.15)',
+      borderWidth: 2,
+      tension: 0.25,
+      pointRadius: 0
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      x: { ticks: { autoSkip: true } },
+      y: { beginAtZero: false }
+    }
+  }
+});
+
+// ================================
+// ATUALIZAÇÃO EM TEMPO REAL
+// ================================
+socket.on("new_data", function(ev) {
+    const frutaAtual = document.getElementById("selectFruta").value;
+    if (ev.tipoFruta !== frutaAtual) return;
+
+    updateChart(ev);
+    atualizarPainel(ev);
+    atualizarAcuracia(ev.tipoFruta);
+});
+
+// ================================
+// FUNÇÃO: ATUALIZAR GRÁFICO
+// ================================
+function updateChart(ev) {
+  const hora = new Date(ev.timestamp).toLocaleTimeString();
+
+  mqChart.data.labels.push(hora);
+  mqChart.data.datasets[0].data.push(ev.mq3_raw);
+
+  if (mqChart.data.labels.length > 100) {
+    mqChart.data.labels.shift();
+    mqChart.data.datasets[0].data.shift();
+  }
+
+  mqChart.update();
+}
+
+// ================================
+// FUNÇÃO: ATUALIZAR PAINEL
+// ================================
+function atualizarPainel(ev) {
+  document.getElementById("estadoPrev").innerText = ev.estado_previsto || "--";
+  document.getElementById("estadoReal").innerText = ev.estado_real || "--";
+  document.getElementById("validadeEstimada").innerText =
+      ev.validade !== null ? ev.validade + " horas" : "--";
+}
+
+// ================================
+// ACURÁCIA: compara estado_real x estado_previsto
+// ================================
+async function atualizarAcuracia(tipoFruta) {
+  let r = await fetch(`/api/fruta/${tipoFruta}/limpo`);
+  let dados = await r.json();
+
+  if (!Array.isArray(dados) || dados.length === 0) {
+    document.getElementById("acuracia").innerText = "Sem dados suficientes";
+    return;
+  }
+
+  let reais = [];
+  let previstos = [];
+
+  dados.forEach(d => {
+    if (d.estado_real && d.estado_previsto) {
+      reais.push(d.estado_real);
+      previstos.push(d.estado_previsto);
+    }
+  });
+
+  if (reais.length === 0) {
+    document.getElementById("acuracia").innerText = "Nenhum estado_real informado";
+    return;
+  }
+
+  let acertos = 0;
+  for (let i = 0; i < reais.length; i++) {
+    if (reais[i] === previstos[i]) acertos++;
+  }
+
+  let acc = ((acertos / reais.length) * 100).toFixed(1);
+
+  document.getElementById("acuracia").innerText =
+      `${acc}% de acerto (${acertos} de ${reais.length})`;
+}
+
+// ================================
+// CARREGAR PRIMEIRA VEZ
+// ================================
+function carregarDados() {
+  mqChart.data.labels = [];
+  mqChart.data.datasets[0].data = [];
+  mqChart.update();
+}
+
+carregarDados();
+</script>
+
+</body>
+</html>
